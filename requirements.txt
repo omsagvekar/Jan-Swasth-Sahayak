@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pandas
+scikit-learn
+joblib
+httpx
+transformers
+torch
+accelerate
+safetensors
