@@ -27,6 +27,7 @@ import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import { type StateBudgetData } from '../types';
 import {
   allocateFunds,
+  AllocationRow,
   explainAllocation,
   fetchStateHealthInputs,
   type AllocateFundsResponse,
@@ -123,6 +124,11 @@ const Dashboard: React.FC<DashboardProps> = ({ budgetData, isLoading, error }) =
   const [explainResult, setExplainResult] = useState<ExplainAllocationResponse | null>(null);
   const [isExplaining, setIsExplaining] = useState(false);
   const [explainError, setExplainError] = useState<string | null>(null);
+
+  // AI Chat State
+  const [userQuestion, setUserQuestion] = useState<string>('');
+  const [aiResponse, setAiResponse] = useState<string>('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
 
   const [selectedMapState, setSelectedMapState] = useState<string | null>(null);
   const [mapPanelEntered, setMapPanelEntered] = useState(false);
@@ -251,6 +257,60 @@ const Dashboard: React.FC<DashboardProps> = ({ budgetData, isLoading, error }) =
       setExplainError(err instanceof Error ? err.message : 'Failed to get explanation. Check Ollama server.');
     } finally {
       setIsExplaining(false);
+    }
+  };
+
+  const handleAskAI = async (selectedStateData: AllocationRow | undefined) => {
+    if (!selectedStateData) {
+      setAiResponse('');
+      return;
+    }
+
+    const targetStateInput = healthInputs.find((s) => s.state === selectedStateData.state);
+
+    if (!targetStateInput) {
+      setAiResponse('Error: Could not find health data for this state.');
+      return;
+    }
+
+    if (!userQuestion.trim()) {
+      setAiResponse('Please enter a question.');
+      return;
+    }
+
+    setAiResponse('');
+    setIsAiLoading(true);
+
+    try {
+      const payload = {
+        state: selectedStateData.state,
+        ml_allocated_budget_cr: selectedStateData.allocated_budget_cr,
+        health_burden_score: selectedStateData.health_burden_score,
+        need_index: targetStateInput.need_index,
+        poverty_rate: targetStateInput.poverty_rate,
+        doctors_per_1000: targetStateInput.doctors_per_1000,
+        question: userQuestion.trim(),
+      };
+
+      const response = await fetch('http://localhost:8000/explain-allocation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API error (${response.status}): ${errorText}`);
+      }
+
+      const data = (await response.json()) as ExplainAllocationResponse;
+      setAiResponse(data.explanation);
+    } catch (err) {
+      setAiResponse(err instanceof Error ? err.message : 'Failed to get AI response. Ensure FastAPI backend is running.');
+    } finally {
+      setIsAiLoading(false);
     }
   };
 
