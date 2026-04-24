@@ -385,7 +385,7 @@ const Dashboard: React.FC<DashboardProps> = ({ budgetData, isLoading, error }) =
         <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-end">
           <div className="min-w-0 flex-1">
             <label htmlFor="national-fund" className="mb-1 block text-sm font-medium text-slate-400">
-              Total National Emergency Fund (Cr)
+              Total National Health Budget (Cr)
             </label>
             <input
               id="national-fund"
@@ -414,7 +414,7 @@ const Dashboard: React.FC<DashboardProps> = ({ budgetData, isLoading, error }) =
               <p className="text-lg font-semibold text-white">₹{allocationResult.total_national_budget.toLocaleString()}</p>
             </div>
             <div className="min-w-[120px]">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Predicted global need (Cr)</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Predicted National Need (Cr)</p>
               <p className="text-lg font-semibold text-white">₹{allocationResult.total_predicted_national_need_cr.toLocaleString()}</p>
             </div>
             <div className="min-w-[120px]">

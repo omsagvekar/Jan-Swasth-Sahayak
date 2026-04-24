@@ -1,7 +1,7 @@
-
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import './index.css'; // <-- THIS IS THE MAGIC LINE YOU ARE MISSING
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

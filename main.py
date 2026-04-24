@@ -97,6 +97,25 @@ class StateHealthInputsResponse(BaseModel):
     source: Literal["enhanced_healthcare_dataset.csv"]
     states: list[StateHealthInput]
 
+class ChatRequest(BaseModel):
+    query: str
+    context: str
+
+# NEW: Simulator Models
+class SimulatePolicyRequest(BaseModel):
+    state: str
+    population: int
+    disease_prevalence_index: float
+    target_poverty_rate: float
+    target_doctors_per_1000: float
+
+class SimulatePolicyResponse(BaseModel):
+    state: str
+    new_health_burden_score: float
+    new_need_index: float
+    projected_required_budget_cr: float
+
+
 # ============================================================================
 # GLOBAL VARIABLES
 # ============================================================================
@@ -118,6 +137,7 @@ def _load_latest_state_inputs() -> list[StateHealthInput]:
     try:
         df = pd.read_csv(DATA_PATH)
         required = ["Year", "State", "Population", "Health_Burden_Score", "Need_Index", "Disease_Prevalence_Index", "Poverty_Rate", "Doctors_per_1000"]
+        
         if any(col not in df.columns for col in required):
             logger.error("Missing columns in dataset!")
             return []
@@ -149,47 +169,30 @@ def _load_latest_state_inputs() -> list[StateHealthInput]:
         return []
 
 def _generate_fallback_explanation(payload: ExplainAllocationRequest) -> str:
-    """
-    Generate a text-based explanation using rule-based analysis if AI fails.
-    """
+    """Fallback Rule-based analysis if AI fails."""
     allocation = payload.ml_allocated_budget_cr
     need = payload.need_index
     burden = payload.health_burden_score
     poverty = payload.poverty_rate
     doctors = payload.doctors_per_1000
     
-    lines = []
-    lines.append(f"Analysis for {payload.state}:")
-    lines.append("")
-    lines.append(f"Budget Allocation: Rs.{allocation:.2f} Crore")
-    lines.append("")
+    lines = [f"Analysis for {payload.state}:\n\nBudget Allocation: Rs.{allocation:.2f} Crore\n"]
     
-    if burden >= 75:
-        lines.append("- High health burden: Significant disease prevalence and mortality rates.")
-    elif burden >= 50:
-        lines.append("- Moderate health burden: Notable health challenges in the region.")
-    else:
-        lines.append("- Lower health burden: Good health outcomes relative to national average.")
+    if burden >= 75: lines.append("- High health burden: Significant disease prevalence and mortality rates.")
+    elif burden >= 50: lines.append("- Moderate health burden: Notable health challenges in the region.")
+    else: lines.append("- Lower health burden: Good health outcomes relative to national average.")
     
-    if need >= 0.8:
-        lines.append(f"- High need index ({need:.2f}): Critical healthcare infrastructure requirements.")
-    else:
-        lines.append(f"- Moderate need index ({need:.2f}): Reasonable healthcare infrastructure.")
+    if need >= 0.8: lines.append(f"- High need index ({need:.2f}): Critical healthcare infrastructure requirements.")
+    else: lines.append(f"- Moderate need index ({need:.2f}): Reasonable healthcare infrastructure.")
     
-    if poverty >= 30:
-        lines.append(f"- High poverty rate ({poverty:.1f}%): Significant economic vulnerability affecting healthcare access.")
-    else:
-        lines.append(f"- Poverty rate ({poverty:.1f}%): Moderate economic capacity for healthcare access.")
+    if poverty >= 30: lines.append(f"- High poverty rate ({poverty:.1f}%): Significant economic vulnerability affecting healthcare access.")
+    else: lines.append(f"- Poverty rate ({poverty:.1f}%): Moderate economic capacity for healthcare access.")
     
-    if doctors < 1:
-        lines.append(f"- Low doctor availability ({doctors:.2f} per 1000): Critical shortage of medical professionals.")
-    elif doctors < 2:
-        lines.append(f"- Moderate doctor availability ({doctors:.2f} per 1000): Need for physician recruitment.")
-    else:
-        lines.append(f"- Reasonable doctor availability ({doctors:.2f} per 1000): Adequate medical workforce.")
+    if doctors < 1: lines.append(f"- Low doctor availability ({doctors:.2f} per 1000): Critical shortage of medical professionals.")
+    elif doctors < 2: lines.append(f"- Moderate doctor availability ({doctors:.2f} per 1000): Need for physician recruitment.")
+    else: lines.append(f"- Reasonable doctor availability ({doctors:.2f} per 1000): Adequate medical workforce.")
     
-    lines.append("")
-    lines.append(f"Recommendation: This allocation of Rs.{allocation:.2f} Crore aims to address identified health burden while considering infrastructure gaps and socioeconomic factors. Funds were distributed using the Crisis-Weighted Proportional Allocation Algorithm.")
+    lines.append(f"\nRecommendation: This allocation of Rs.{allocation:.2f} Crore aims to address identified health burden while considering infrastructure gaps and socioeconomic factors. Funds were distributed using the Crisis-Weighted Proportional Allocation Algorithm.")
     
     return "\n".join(lines)
 
@@ -199,13 +202,8 @@ def _generate_fallback_explanation(payload: ExplainAllocationRequest) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Lifespan context manager for FastAPI app startup and shutdown.
-    Properly handles model loading with comprehensive error handling.
-    """
     global budget_model, latest_state_inputs, custom_ai_pipeline
     
-    # ========== STARTUP ==========
     logger.info("=" * 70)
     logger.info("STARTING APPLICATION STARTUP SEQUENCE")
     logger.info("=" * 70)
@@ -215,76 +213,57 @@ async def lifespan(app: FastAPI):
         if not MODEL_PATH.exists():
             raise RuntimeError(f"Model file not found at {MODEL_PATH}. Run `python train_budget_model.py` first.")
         
-        logger.info(f"✓ Model file exists")
         logger.info(f"Loading budget model...")
         budget_model = joblib.load(MODEL_PATH)
-        logger.info(f"✓ Budget model loaded successfully (type: {type(budget_model).__name__})")
         
         logger.info(f"Loading state health inputs from: {DATA_PATH}")
         latest_state_inputs = _load_latest_state_inputs()
-        logger.info(f"✓ Loaded {len(latest_state_inputs)} state health inputs")
         
-        # --- NEW: COMBINING BASE MODEL WITH YOUR CUSTOM LORA ADAPTER ---
         if SLM_MODEL_PATH.exists():
             logger.info("🚀 Loading Base Model and attaching Custom LoRA Adapter... This may take a minute.")
             try:
-                # 1. Load the base model from Hugging Face
                 base_model_id = "Qwen/Qwen2.5-0.5B-Instruct"
                 tokenizer = AutoTokenizer.from_pretrained(str(SLM_MODEL_PATH))
                 
-                # THE FIX: Force it entirely into RAM (CPU) to prevent disk-offloading crashes
                 base_model = AutoModelForCausalLM.from_pretrained(
                     base_model_id, 
-                    device_map="cpu",  # <--- Changed from "auto"
+                    device_map="cpu",  
                     torch_dtype=torch.float32 
                 )
                 
-                # 2. Inject YOUR custom financial weights (the Adapter) into the Base Model
                 logger.info("🧠 Injecting custom financial knowledge...")
                 model_with_adapter = PeftModel.from_pretrained(base_model, str(SLM_MODEL_PATH))
                 
-                # 3. Spin up the generative pipeline
                 custom_ai_pipeline = pipeline(
                     "text-generation", 
                     model=model_with_adapter, 
                     tokenizer=tokenizer,
-                    device_map="cpu"   # <--- Changed from "auto"
+                    device_map="cpu"   
                 )
                 logger.info("✅ Custom AI successfully loaded into memory!")
             except Exception as e:
                 logger.error(f"❌ Failed to load AI model: {e}")
-                custom_ai_pipeline = None # Force fallback if it crashes
+                custom_ai_pipeline = None 
         else:
             logger.warning(f"⚠️ WARNING: Custom AI folder not found at {SLM_MODEL_PATH}. App will use fallback rule-based analysis.")
 
-        logger.info("=" * 70)
         logger.info("[OK] Models and health inputs loaded successfully.")
-        logger.info("=" * 70)
         
     except Exception as e:
-        logger.critical("=" * 70)
-        logger.critical(f"STARTUP FAILED WITH EXCEPTION:")
-        logger.exception(e)
-        logger.critical("=" * 70)
+        logger.critical(f"STARTUP FAILED WITH EXCEPTION: {e}")
         pass
 
-    # ========== YIELD CONTROL TO APP ==========
     logger.info("\n>>> Application is now accepting requests <<<\n")
     yield
     
-    # ========== SHUTDOWN ==========
-    logger.info("\n" + "=" * 70)
     logger.info("STARTING APPLICATION SHUTDOWN SEQUENCE")
-    logger.info("=" * 70)
     try:
         budget_model = None
         latest_state_inputs = []
-        custom_ai_pipeline = None # Clean up AI memory
+        custom_ai_pipeline = None 
         logger.info("✓ Resources cleaned up")
     except Exception as e:
         logger.exception(f"Error during shutdown: {e}")
-    logger.info("[OK] Shutdown complete")
-    logger.info("=" * 70)
 
 # ============================================================================
 # FASTAPI APP INITIALIZATION
@@ -350,16 +329,7 @@ def allocate_funds(payload: AllocateFundsRequest) -> AllocateFundsResponse:
 
     for idx, state in enumerate(payload.states):
         predicted_need = safe_predicted_needs[idx]
-        
-        # Calculate raw crisis multiplier
-        crisis_multiplier = (
-            float(state.health_burden_score) * float(state.need_index) * float(state.poverty_rate)
-        ) / 1000.0  # Normalized to prevent massive number overflow
-        
-        # Ensure minimum weight so NO STATE gets zero
-        crisis_multiplier = max(crisis_multiplier, 0.1) 
-        
-        # Total weight is how much money they need multiplied by how desperate they are
+        crisis_multiplier = max((float(state.health_burden_score) * float(state.need_index) * float(state.poverty_rate)) / 1000.0, 0.1) 
         state_weight = predicted_need * crisis_multiplier
         total_national_weight += state_weight
         
@@ -367,37 +337,49 @@ def allocate_funds(payload: AllocateFundsRequest) -> AllocateFundsResponse:
             "state": state,
             "predicted_need": predicted_need,
             "crisis_multiplier": crisis_multiplier,
-            "weight": state_weight
+            "weight": state_weight,
+            "allocated_budget": 0.0 # Will be populated by Waterfall
         })
 
-    # 3. Distribute the Funds (Proportional Equity)
+    # 3. WATERFALL DISTRIBUTION ALGORITHM
     budget_remaining = total_national_budget
+    
+    if total_national_budget >= total_predicted_need:
+        for data in states_data:
+            data["allocated_budget"] = data["predicted_need"]
+            budget_remaining -= data["predicted_need"]
+    else:
+        unmet_states = states_data.copy()
+        
+        while budget_remaining > 0.01 and len(unmet_states) > 0:
+            total_weight = sum(s["weight"] for s in unmet_states)
+            if total_weight <= 0:
+                break
+                
+            pool_to_distribute = budget_remaining
+            budget_remaining = 0.0 
+            
+            for data in unmet_states[:]: 
+                share_of_pie = data["weight"] / total_weight
+                proposed_grant = pool_to_distribute * share_of_pie
+                
+                if data["allocated_budget"] + proposed_grant >= data["predicted_need"]:
+                    amount_needed = data["predicted_need"] - data["allocated_budget"]
+                    data["allocated_budget"] = data["predicted_need"]
+                    budget_remaining += (proposed_grant - amount_needed)
+                    unmet_states.remove(data)
+                else:
+                    data["allocated_budget"] += proposed_grant
 
-    # Sort by weight descending for the final output
+    # 4. Format the Output
     states_data.sort(key=lambda x: x["weight"], reverse=True)
 
     for data in states_data:
         state = data["state"]
         predicted_need = data["predicted_need"]
+        allocated_budget = data["allocated_budget"]
         
-        # If budget is massive, fully fund. If deficit, distribute proportionally by weight.
-        if total_national_budget >= total_predicted_need:
-            allocated_budget = predicted_need
-            status = "Fully Funded"
-        else:
-            # Calculate their exact slice of the pie
-            share_of_pie = data["weight"] / total_national_weight
-            allocated_budget = total_national_budget * share_of_pie
-            
-            # Safety Check: Never give a state MORE than they actually need
-            if allocated_budget > predicted_need:
-                allocated_budget = predicted_need
-                
-            # If they got less than 95% of what they needed, mark as Deficit
-            status = "Partial Funding (Deficit)" if allocated_budget < (predicted_need * 0.95) else "Fully Funded"
-
-        budget_remaining -= allocated_budget
-        
+        status = "Partial Funding (Deficit)" if allocated_budget < (predicted_need * 0.95) else "Fully Funded"
         allocation_share_percentage = (allocated_budget / total_national_budget) * 100.0 if total_national_budget > 0 else 0.0
 
         allocations.append(
@@ -412,7 +394,6 @@ def allocate_funds(payload: AllocateFundsRequest) -> AllocateFundsResponse:
             )
         )
 
-    # Any leftover budget goes to the national reserve
     national_reserve_fund = round(max(budget_remaining, 0.0), 2)
 
     return AllocateFundsResponse(
@@ -424,17 +405,8 @@ def allocate_funds(payload: AllocateFundsRequest) -> AllocateFundsResponse:
 
 @app.post("/explain-allocation", response_model=ExplainAllocationResponse)
 def explain_allocation(payload: ExplainAllocationRequest) -> ExplainAllocationResponse:
-    """
-    Explain the budget allocation for a specific state.
-    Attempts to use AI model if available, falls back to rule-based analysis.
-    """
-    logger.info(f"Explain allocation request for state: {payload.state} | Question: {payload.question}")
-    
-    # If AI model is loaded, use it
     if custom_ai_pipeline is not None:
-        logger.info("Using AI pipeline for explanation")
         try:
-            # The EXACT prompt strategy that worked in our Colab Sandbox
             messages = [
                 {
                     "role": "system", 
@@ -446,11 +418,10 @@ def explain_allocation(payload: ExplainAllocationRequest) -> ExplainAllocationRe
                 }
             ]
             
-            # Generating text with the Colab fixes applied
             result = custom_ai_pipeline(
                 messages, 
                 max_new_tokens=200,
-                truncation=True,     # CRITICAL: Fixes the Hugging Face token crash!
+                truncation=True,     
                 do_sample=True,      
                 temperature=0.8,     
                 top_p=0.9,           
@@ -458,19 +429,14 @@ def explain_allocation(payload: ExplainAllocationRequest) -> ExplainAllocationRe
             )
             
             explanation = result[0]['generated_text'][-1]['content']
-            logger.info("✅ AI explanation generated successfully")
             
         except Exception as exc:
             logger.error(f"❌ AI pipeline CRASHED during generation: {exc}")
-            logger.info("Falling back to rule-based analysis...")
             explanation = _generate_fallback_explanation(payload)
     else:
-        # Fallback: Generate explanation based on the data itself
-        logger.warning("⚠️ custom_ai_pipeline is None! AI never loaded on startup. Using fallback.")
         try:
             explanation = _generate_fallback_explanation(payload)
         except Exception as exc:
-            logger.exception(f"Failed to generate explanation: {exc}")
             raise HTTPException(status_code=500, detail=f"Failed to generate explanation: {str(exc)}")
 
     return ExplainAllocationResponse(
@@ -478,3 +444,118 @@ def explain_allocation(payload: ExplainAllocationRequest) -> ExplainAllocationRe
         explanation=explanation.strip(),
         model="Custom-Jan-Swasthya-Analyzer (Rule-Based)" if custom_ai_pipeline is None else "Custom-Jan-Swasthya-0.5B (Proprietary)",
     )
+
+
+# ============================================================================
+# NEW SIMULATE POLICY ENDPOINT (REPLACES FAKE UI MATH)
+# ============================================================================
+
+@app.post("/simulate-policy", response_model=SimulatePolicyResponse)
+def simulate_policy_v2(payload: SimulatePolicyRequest) -> SimulatePolicyResponse:
+    """
+    Goal-Seek ML endpoint for Policy Simulator.
+    Predicts the cost of changing demographics using the ML Model.
+    """
+    if budget_model is None:
+        raise HTTPException(status_code=500, detail="ML Model offline.")
+
+    # 1. Recalculate basic burden 
+    new_burden = min(100.0, max(10.0, (payload.target_poverty_rate * 1.5) - (payload.target_doctors_per_1000 * 10)))
+    new_need = min(1.0, max(0.1, new_burden / 100.0))
+
+    # 2. Ask the ML Model how much this Utopian state costs!
+    X_sim = pd.DataFrame({
+        "Population": [payload.population],
+        "Health_Burden_Score": [new_burden],
+        "Need_Index": [new_need],
+        "Disease_Prevalence_Index": [payload.disease_prevalence_index],
+        "Poverty_Rate": [payload.target_poverty_rate],
+        "Doctors_per_1000": [payload.target_doctors_per_1000],
+    })
+
+    projected_budget = float(budget_model.predict(X_sim)[0])
+
+    return SimulatePolicyResponse(
+        state=payload.state,
+        new_health_burden_score=round(new_burden, 1),
+        new_need_index=round(new_need, 2),
+        projected_required_budget_cr=round(projected_budget, 2)
+    )
+
+@app.post("/api/policy-simulate", response_model=SimulatePolicyResponse)
+
+def simulate_policy(payload: SimulatePolicyRequest) -> SimulatePolicyResponse:
+    """Predict the cost of changing demographics using the ML Model."""
+    if budget_model is None:
+        raise HTTPException(status_code=500, detail="ML Model offline.")
+
+    # 1. Recalculate basic burden 
+    new_burden = min(100.0, max(10.0, (payload.target_poverty_rate * 1.5) - (payload.target_doctors_per_1000 * 10)))
+    new_need = min(1.0, max(0.1, new_burden / 100.0))
+
+    # 2. Ask the ML Model how much this Utopian state costs!
+    X_sim = pd.DataFrame({
+        "Population": [payload.population],
+        "Health_Burden_Score": [new_burden],
+        "Need_Index": [new_need],
+        "Disease_Prevalence_Index": [payload.disease_prevalence_index],
+        "Poverty_Rate": [payload.target_poverty_rate],
+        "Doctors_per_1000": [payload.target_doctors_per_1000],
+    })
+
+    projected_budget = float(budget_model.predict(X_sim)[0])
+
+    return SimulatePolicyResponse(
+        state=payload.state,
+        new_health_burden_score=round(new_burden, 1),
+        new_need_index=round(new_need, 2),
+        projected_required_budget_cr=round(projected_budget, 2)
+    )
+
+# ============================================================================
+# NEW HARD-CAGED CHATBOT ENDPOINT 
+# ============================================================================
+
+@app.post("/api/chat")
+def process_chat(request: ChatRequest) -> dict:
+    """Chat Endpoint with Hard Keyword Interceptors to prevent hallucinations."""
+    logger.info(f"Chat request received: {request.query}")
+    user_query_lower = request.query.lower()
+
+    # GUARDRAIL 1: Hard Keyword Interceptor (The Python Cage)
+    forbidden_words = ['python', 'code', 'script', 'joke', 'poem', 'allocate', 'exact budget', 'crore', 'rupee', 'florida', 'tokyo']
+    if any(word in user_query_lower for word in forbidden_words):
+        return {"reply": "I am the National AI Health Financial Advisor. I am strictly programmed to analyze demographic health data for Indian states. I cannot write code, tell jokes, or discuss exact fiscal allocations directly in this chat."}
+
+    # GUARDRAIL 2: Strict State Matcher
+    matched_state = None
+    context_data = ""
+    for state_obj in latest_state_inputs:
+        if state_obj.state.lower() in user_query_lower:
+            matched_state = state_obj
+            context_data = f"State: {state_obj.state} | Poverty: {state_obj.poverty_rate}% | Need Index: {state_obj.need_index:.2f} | Doctors per 1000: {state_obj.doctors_per_1000:.2f} | Health Burden: {state_obj.health_burden_score}"
+            break 
+            
+    if not matched_state:
+        return {"reply": "Please specify a valid Indian State or Union Territory for me to analyze."}
+
+    # GUARDRAIL 3: Safely generate using ONLY the matched context
+    system_prompt = f"You are a Health Financial Advisor. Read this data: {context_data}. Summarize the health situation in 2 sentences. Do not mention money."
+
+    if custom_ai_pipeline is not None:
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt}, 
+                {"role": "user", "content": request.query}
+            ]
+            result = custom_ai_pipeline(
+                messages, 
+                max_new_tokens=100, 
+                truncation=True, 
+                do_sample=True, 
+                temperature=0.2
+            )
+            return {"reply": result[0]['generated_text'][-1]['content'].strip()}
+        except Exception:
+            return {"reply": "Sorry, I experienced a memory error."}
+    return {"reply": "AI is offline due to memory constraints."}

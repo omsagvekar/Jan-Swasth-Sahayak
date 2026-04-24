@@ -12,7 +12,8 @@
     "skipLibCheck": true,
     "types": [
       "node",
-      "geojson"
+      "geojson",
+      "./types"
     ],
     "moduleResolution": "bundler",
     "isolatedModules": true,

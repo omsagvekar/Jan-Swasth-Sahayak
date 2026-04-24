@@ -6,7 +6,6 @@ import DashboardLayout from './components/DashboardLayout';
 import StateWarRoom from './components/StateWarRoom';
 import CompareStates from './components/CompareStates';
 import PolicySimulator from './components/PolicySimulator';
-import NationalAIChat from './components/NationalAIChat';
 import { fetchStateBudgetData } from './services/dataService';
 import { AuthProvider } from './auth/AuthContext';
 import ProtectedRoute from './auth/ProtectedRoute';
@@ -212,7 +211,6 @@ const App: React.FC = () => {
               <Route path="dashboard" element={<DashboardPage />} />
               <Route path="compare" element={<CompareStates />} />
               <Route path="simulator" element={<PolicySimulator />} />
-              <Route path="chat" element={<NationalAIChat />} />
               <Route path="state/:id" element={<StateWarRoom />} />
               <Route path="admin/upload" element={<ProtectedRoute allowedRoles={['admin']}><AdminUploadPage /></ProtectedRoute>} />
             </Route>
